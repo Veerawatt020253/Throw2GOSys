@@ -1,0 +1,219 @@
+import RPi.GPIO as GPIO
+import cv2
+from pyzbar.pyzbar import decode
+from time import sleep
+import requests
+import json
+import base64
+from io import BytesIO
+from PIL import Image
+
+# === ตั้งค่า GPIO ===
+GPIO.setmode(GPIO.BOARD)
+
+servo_pin1 = 11  # ตัวที่ 1
+servo_pin2 = 13  # ตัวที่ 2
+
+GPIO.setup(servo_pin1, GPIO.OUT)
+GPIO.setup(servo_pin2, GPIO.OUT)
+
+pwm1 = GPIO.PWM(servo_pin1, 50)  # 50Hz
+pwm2 = GPIO.PWM(servo_pin2, 50)  # 50Hz
+
+pwm1.start(0)
+pwm2.start(0)
+
+# === ตั้งค่าคะแนนสำหรับแต่ละประเภทขยะ ===
+TRASH_POINTS = {
+    'cardboard': 10,
+    'glass': 15,
+    'metal': 20,
+    'paper': 8,
+    'plastic': 12,
+    'trash': 2,
+    'Food Organics': 5,
+    'Miscellaneous': 3,
+    'Textile Trash': 7,
+    'Vegetation': 6
+}
+
+# === API URLs ===
+USERS_API = "https://twg.ongor.fun/users"
+PREDICT_API = "https://api.ongor.fun/throw2go/predict"
+ADD_POINTS_API = "https://twg.ongor.fun/users/{}/add_points"
+
+def set_angle(pwm, angle):
+    """ตั้งมุมของ servo motor"""
+    duty = 2 + (angle / 18)
+    pwm.ChangeDutyCycle(duty)
+    sleep(0.5)  # ให้เวลามอเตอร์ขยับ
+
+def check_user_exists(qr_data):
+    """ตรวจสอบว่า UID ของผู้ใช้มีอยู่ใน database หรือไม่"""
+    try:
+        response = requests.get(USERS_API, timeout=10)
+        if response.status_code == 200:
+            users_data = response.json()
+            return qr_data in users_data
+        else:
+            print(f"Error checking user: HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"Error checking user: {e}")
+        return False
+
+def capture_and_predict_trash(camera):
+    """ใช้กล้องตัวที่ 2 ถ่ายภาพและส่งไป predict"""
+    try:
+        # ถ่ายภาพ
+        ret, frame = camera.read()
+        if not ret:
+            print("ไม่สามารถถ่ายภาพได้")
+            return None, None
+            
+        # แปลงภาพเป็น base64
+        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        buffered = BytesIO()
+        pil_img.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+        
+        # ส่งไป API
+        payload = {"image": img_base64}
+        response = requests.post(PREDICT_API, json=payload, timeout=15)
+        
+        if response.status_code == 200:
+            result = response.json()
+            predicted_class = result.get("predicted_class")
+            confidence = result.get("confidence", 0)
+            print(f"Predicted: {predicted_class}, Confidence: {confidence:.2f}")
+            return predicted_class, confidence
+        else:
+            print(f"Error predicting: HTTP {response.status_code}")
+            return None, None
+            
+    except Exception as e:
+        print(f"Error in prediction: {e}")
+        return None, None
+
+def add_points_to_user(user_id, predicted_class):
+    """เพิ่มคะแนนให้กับผู้ใช้"""
+    try:
+        points = TRASH_POINTS.get(predicted_class, 0)
+        if points == 0:
+            print(f"ไม่มีคะแนนสำหรับประเภท: {predicted_class}")
+            return False
+            
+        url = ADD_POINTS_API.format(user_id)
+        payload = {"points": points}
+        
+        response = requests.post(url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"เพิ่มคะแนน {points} ให้ผู้ใช้ {user_id} สำเร็จ")
+            return True
+        else:
+            print(f"Error adding points: HTTP {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"Error adding points: {e}")
+        return False
+
+def reset_servos():
+    """รีเซ็ต servo กลับตำแหน่งเริ่มต้น"""
+    print("รีเซ็ต servo กลับตำแหน่งเริ่มต้น")
+    set_angle(pwm1, 85)
+    set_angle(pwm2, 65)
+    print("รีเซ็ตเสร็จสิ้น - พร้อมใช้งานใหม่")
+
+def main():
+    """ฟังก์ชันหลัก"""
+    # เริ่มต้นที่ 85 องศา
+    print("เซอร์โวอยู่ที่ตำแหน่งเริ่มต้น รอ QR Code...")
+    reset_servos()
+
+    # === เปิดกล้อง ===
+    # กล้องตัวที่ 1 สำหรับสแกน QR
+    cap1 = cv2.VideoCapture(0)
+    cap1.set(3, 640)
+    cap1.set(4, 480)
+    
+    # กล้องตัวที่ 2 สำหรับถ่ายภาพขยะ
+    cap2 = cv2.VideoCapture(1)  # หรือเปลี่ยนเป็น index ที่เหมาะสม
+    cap2.set(3, 640)
+    cap2.set(4, 480)
+
+    try:
+        while True:
+            success, frame = cap1.read()
+            if not success:
+                continue
+
+            # แสดงภาพจากกล้องตัวที่ 1
+            cv2.imshow("QR Scanner", frame)
+            
+            # สแกนหา QR code
+            for code in decode(frame):
+                qr_data = code.data.decode("utf-8")
+                print(f"เจอ QR: {qr_data}")
+
+                # ตรวจสอบผู้ใช้
+                if check_user_exists(qr_data):
+                    print(f"ผู้ใช้ {qr_data} มีอยู่ในระบบ")
+                    
+                    # เปิด servo ตัวแรก ไปที่ 0°
+                    print("เปิดเซอร์โวตัวที่ 1 ไป 0°")
+                    set_angle(pwm1, 0)
+
+                    print("รอ 10 วินาที...")
+                    sleep(10)
+
+                    # servo ตัวแรก ไปที่ 51°, servo ตัวที่สอง ไปที่ 180°
+                    print("เซอร์โวตัวที่ 1 ไปที่ 51° และตัวที่ 2 ไปที่ 180°")
+                    set_angle(pwm1, 51)
+                    set_angle(pwm2, 180)
+
+                    print("รออีก 5 วินาทีแล้วถ่ายภาพ...")
+                    sleep(5)
+                    
+                    # ถ่ายภาพและ predict
+                    print("กำลังถ่ายภาพและวิเคราะห์ขยะ...")
+                    predicted_class, confidence = capture_and_predict_trash(cap2)
+                    
+                    if predicted_class and confidence:
+                        print(f"ตรวจพบ: {predicted_class} (ความมั่นใจ: {confidence:.2f})")
+                        
+                        # เพิ่มคะแนนให้ผู้ใช้
+                        if add_points_to_user(qr_data, predicted_class):
+                            print("เพิ่มคะแนนสำเร็จ!")
+                        else:
+                            print("ไม่สามารถเพิ่มคะแนนได้")
+                    else:
+                        print("ไม่สามารถวิเคราะห์ขยะได้")
+                    
+                    print("รออีก 5 วินาที...")
+                    sleep(5)
+                    print("Success - กระบวนการเสร็จสิ้น")
+
+                    # กลับตำแหน่งเริ่มต้น
+                    reset_servos()
+                    
+                else:
+                    print(f"ผู้ใช้ {qr_data} ไม่มีในระบบ")
+
+            if cv2.waitKey(1) == ord("q"):
+                break
+
+    except KeyboardInterrupt:
+        print("หยุดด้วย Ctrl+C")
+
+    finally:
+        cap1.release()
+        cap2.release()
+        cv2.destroyAllWindows()
+        pwm1.stop()
+        pwm2.stop()
+        GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
