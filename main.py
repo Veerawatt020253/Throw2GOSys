@@ -62,17 +62,39 @@ def check_user_exists(qr_data):
         print(f"Error checking user: {e}")
         return False
 
-def capture_and_predict_trash(camera):
-    """ใช้กล้องตัวที่ 2 ถ่ายภาพและส่งไป predict"""
+def open_camera(camera_index):
+    """เปิดกล้องและตั้งค่า"""
+    cap = cv2.VideoCapture(camera_index)
+    cap.set(3, 640)
+    cap.set(4, 480)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
+
+def close_camera(cap):
+    """ปิดกล้องและปล่อยทรัพยากร"""
+    if cap and cap.isOpened():
+        cap.release()
+        print(f"ปิดกล้องแล้ว")
+
+def capture_and_predict_trash():
+    """เปิดกล้องตัวที่ 2, ถ่ายภาพ, predict แล้วปิดกล้อง"""
+    cap2 = None
     try:
-        # ล้างบัฟเฟอร์กล้องก่อนถ่าย (อ่านภาพทิ้งไป 5 เฟรม)
+        print("เปิดกล้องสำหรับถ่ายภาพขยะ...")
+        cap2 = open_camera(1)  # กล้องตัวที่ 2
+        
+        if not cap2.isOpened():
+            print("ไม่สามารถเปิดกล้องตัวที่ 2 ได้")
+            return None, None
+        
+        # ล้างบัฟเฟอร์กล้องก่อนถ่าย
         print("ล้างบัฟเฟอร์กล้อง...")
         for i in range(5):
-            camera.read()
+            cap2.read()
             sleep(0.1)
         
         # ถ่ายภาพจริง
-        ret, frame = camera.read()
+        ret, frame = cap2.read()
         if not ret:
             print("ไม่สามารถถ่ายภาพได้")
             return None, None
@@ -102,6 +124,9 @@ def capture_and_predict_trash(camera):
     except Exception as e:
         print(f"Error in prediction: {e}")
         return None, None
+    finally:
+        # ปิดกล้องเสมอ
+        close_camera(cap2)
 
 def add_points_to_user(user_id, predicted_class):
     """เพิ่มคะแนนให้กับผู้ใช้"""
@@ -132,31 +157,20 @@ def reset_servos():
     print("รีเซ็ต servo กลับตำแหน่งเริ่มต้น")
     set_angle(pwm1, 85)
     set_angle(pwm2, 65)
-    # รอให้ servo เคลื่อนที่เสร็จ
     sleep(2)
     print("รีเซ็ตเสร็จสิ้น - พร้อมใช้งานใหม่")
 
-def main():
-    """ฟังก์ชันหลัก"""
-    # เริ่มต้นที่ 85 องศา
-    print("เซอร์โวอยู่ที่ตำแหน่งเริ่มต้น รอ QR Code...")
-    reset_servos()
-
-    # === เปิดกล้อง ===
-    # กล้องตัวที่ 1 สำหรับสแกน QR
-    cap1 = cv2.VideoCapture(0)
-    cap1.set(3, 640)
-    cap1.set(4, 480)
-    
-    # กล้องตัวที่ 2 สำหรับถ่ายภาพขยะ
-    cap2 = cv2.VideoCapture(1)  # หรือเปลี่ยนเป็น index ที่เหมาะสม
-    cap2.set(3, 640)
-    cap2.set(4, 480)
-    
-    # ตั้งค่า buffer size ให้เล็กลงเพื่อลดความล่าช้าของภาพ
-    cap2.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
+def scan_qr_loop():
+    """ลูปสแกน QR code โดยใช้กล้องตัวที่ 1"""
+    cap1 = None
     try:
+        print("เปิดกล้องสำหรับสแกน QR Code...")
+        cap1 = open_camera(0)  # กล้องตัวที่ 1
+        
+        if not cap1.isOpened():
+            print("ไม่สามารถเปิดกล้องตัวที่ 1 ได้")
+            return None
+            
         while True:
             success, frame = cap1.read()
             if not success:
@@ -169,7 +183,37 @@ def main():
             for code in decode(frame):
                 qr_data = code.data.decode("utf-8")
                 print(f"เจอ QR: {qr_data}")
+                
+                # ปิดกล้องตัวที่ 1 ทันทีที่เจอ QR
+                print("ปิดกล้อง QR Scanner...")
+                close_camera(cap1)
+                cv2.destroyAllWindows()
+                
+                return qr_data  # ส่งข้อมูล QR กลับไป
 
+            if cv2.waitKey(1) == ord("q"):
+                break
+                
+        return None
+        
+    except Exception as e:
+        print(f"Error in QR scanning: {e}")
+        return None
+    finally:
+        close_camera(cap1)
+        cv2.destroyAllWindows()
+
+def main():
+    """ฟังก์ชันหลัก"""
+    print("เซอร์โวอยู่ที่ตำแหน่งเริ่มต้น รอ QR Code...")
+    reset_servos()
+
+    try:
+        while True:
+            # สแกน QR code (เปิดกล้องตัวที่ 1)
+            qr_data = scan_qr_loop()
+            
+            if qr_data:  # เจอ QR code
                 # ตรวจสอบผู้ใช้
                 if check_user_exists(qr_data):
                     print(f"ผู้ใช้ {qr_data} มีอยู่ในระบบ")
@@ -185,9 +229,9 @@ def main():
                     print("ปิดฝาถังขยะ...")
                     set_angle(pwm1, 51)
 
-                    # ถ่ายภาพก่อน (ขณะขยะยังอยู่บนถาด)
+                    # ถ่ายภาพและวิเคราะห์ (เปิดกล้องตัวที่ 2)
                     print("กำลังถ่ายภาพและวิเคราะห์ขยะ...")
-                    predicted_class, confidence = capture_and_predict_trash(cap2)
+                    predicted_class, confidence = capture_and_predict_trash()
                     
                     if predicted_class and confidence:
                         print(f"ตรวจพบ: {predicted_class} (ความมั่นใจ: {confidence:.2f})")
@@ -200,9 +244,9 @@ def main():
                     else:
                         print("ไม่สามารถวิเคราะห์ขยะได้")
                     
-                    # ตอนนี้ค่อยเปิดถาดให้ขยะตกลงไปในถัง
+                    # เปิดถาดให้ขยะตกลงไปในถัง
                     print("เปิดถาดให้ขยะตกลงไปในถัง...")
-                    set_angle(pwm2, 180)  # เปิดถาดล่าง
+                    set_angle(pwm2, 180)
                     
                     print("รอให้ขยะตกลง 3 วินาที...")
                     sleep(3)
@@ -211,7 +255,6 @@ def main():
                     print("ปิดถาดกลับ...")
                     set_angle(pwm2, 65)
                 
-                    
                     print("รออีก 2 วินาที...")
                     sleep(2)
                     print("Success - กระบวนการเสร็จสิ้น")
@@ -221,20 +264,18 @@ def main():
                     
                 else:
                     print(f"ผู้ใช้ {qr_data} ไม่มีในระบบ")
-
-            if cv2.waitKey(1) == ord("q"):
+                    
+            else:  # กด q หรือเกิดข้อผิดพลาด
                 break
 
     except KeyboardInterrupt:
         print("หยุดด้วย Ctrl+C")
 
     finally:
-        cap1.release()
-        cap2.release()
-        cv2.destroyAllWindows()
         pwm1.stop()
         pwm2.stop()
         GPIO.cleanup()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
