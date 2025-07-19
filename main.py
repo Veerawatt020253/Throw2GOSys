@@ -4,9 +4,6 @@ from pyzbar.pyzbar import decode
 from time import sleep
 import requests
 import json
-import base64
-from io import BytesIO
-from PIL import Image
 
 # === ตั้งค่า GPIO ===
 GPIO.setmode(GPIO.BOARD)
@@ -79,15 +76,20 @@ def capture_and_predict_trash(camera):
             
         print("ถ่ายภาพสำเร็จ")
             
-        # แปลงภาพเป็น base64
-        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        buffered = BytesIO()
-        pil_img.save(buffered, format="JPEG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+        # แปลงภาพเป็น JPEG format ในหน่วยความจำ
+        success, img_encoded = cv2.imencode('.jpg', frame)
+        if not success:
+            print("ไม่สามารถ encode ภาพได้")
+            return None, None
         
-        # ส่งไป API
-        payload = {"image": img_base64}
-        response = requests.post(PREDICT_API, json=payload, timeout=15)
+        # เตรียมไฟล์สำหรับส่ง
+        img_bytes = img_encoded.tobytes()
+        files = {
+            'image': ('image.jpg', img_bytes, 'image/jpeg')
+        }
+        
+        # ส่งไป API แบบ multipart/form-data
+        response = requests.post(PREDICT_API, files=files, timeout=15)
         
         if response.status_code == 200:
             result = response.json()
@@ -181,6 +183,10 @@ def main():
                     print("รอให้ผู้ใช้ใส่ขยะ 10 วินาที...")
                     sleep(10)
 
+                    # ปิดฝาถังขยะ
+                    print("ปิดฝาถังขยะ...")
+                    set_angle(pwm1, 51)
+
                     # ถ่ายภาพก่อน (ขณะขยะยังอยู่บนถาด)
                     print("กำลังถ่ายภาพและวิเคราะห์ขยะ...")
                     predicted_class, confidence = capture_and_predict_trash(cap2)
@@ -193,27 +199,27 @@ def main():
                             print("เพิ่มคะแนนสำเร็จ!")
                         else:
                             print("ไม่สามารถเพิ่มคะแนนได้")
+                        
+                        # ตอนนี้ค่อยเปิดถาดให้ขยะตกลงไปในถัง
+                        print("เปิดถาดให้ขยะตกลงไปในถัง...")
+                        set_angle(pwm2, 180)  # เปิดถาดล่าง
+                        
+                        print("รอให้ขยะตกลง 3 วินาที...")
+                        sleep(3)
+                        
+                        # ปิดถาดกลับ
+                        print("ปิดถาดกลับ...")
+                        set_angle(pwm2, 65)
+                    
+                        print("รออีก 2 วินาที...")
+                        sleep(2)
+                        print("Success - กระบวนการเสร็จสิ้น")
                     else:
-                        print("ไม่สามารถวิเคราะห์ขยะได้")
-                    
-                    # ตอนนี้ค่อยเปิดถาดให้ขยะตกลงไปในถัง
-                    print("เปิดถาดให้ขยะตกลงไปในถัง...")
-                    set_angle(pwm2, 180)  # เปิดถาดล่าง
-                    
-                    print("รอให้ขยะตกลง 3 วินาที...")
-                    sleep(3)
-                    
-                    # ปิดถาดกลับ
-                    print("ปิดถาดกลับ...")
-                    set_angle(pwm2, 65)
-                    
-                    # ปิดฝาถังขยะ
-                    print("ปิดฝาถังขยะ...")
-                    set_angle(pwm1, 51)
-                    
-                    print("รออีก 2 วินาที...")
-                    sleep(2)
-                    print("Success - กระบวนการเสร็จสิ้น")
+                        print("ไม่สามารถวิเคราะห์ขยะได้ - ปิดฝาถังทันที")
+                        # ปิดฝาถังทันที (กลับไปตำแหน่งเริ่มต้น)
+                        print("กลับไปตำแหน่งเริ่มต้น...")
+                        set_angle(pwm1, 85)
+                        print("กระบวนการหยุดเนื่องจากไม่สามารถวิเคราะห์ขยะได้")
 
                     # กลับตำแหน่งเริ่มต้น
                     reset_servos()
