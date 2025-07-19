@@ -65,11 +65,19 @@ def check_user_exists(qr_data):
 def capture_and_predict_trash(camera):
     """ใช้กล้องตัวที่ 2 ถ่ายภาพและส่งไป predict"""
     try:
-        # ถ่ายภาพ
+        # ล้างบัฟเฟอร์กล้องก่อนถ่าย (อ่านภาพทิ้งไป 5 เฟรม)
+        print("ล้างบัฟเฟอร์กล้อง...")
+        for i in range(5):
+            camera.read()
+            sleep(0.1)
+        
+        # ถ่ายภาพจริง
         ret, frame = camera.read()
         if not ret:
             print("ไม่สามารถถ่ายภาพได้")
             return None, None
+            
+        print("ถ่ายภาพสำเร็จ")
             
         # แปลงภาพเป็น base64
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -124,6 +132,8 @@ def reset_servos():
     print("รีเซ็ต servo กลับตำแหน่งเริ่มต้น")
     set_angle(pwm1, 85)
     set_angle(pwm2, 65)
+    # รอให้ servo เคลื่อนที่เสร็จ
+    sleep(2)
     print("รีเซ็ตเสร็จสิ้น - พร้อมใช้งานใหม่")
 
 def main():
@@ -142,6 +152,9 @@ def main():
     cap2 = cv2.VideoCapture(1)  # หรือเปลี่ยนเป็น index ที่เหมาะสม
     cap2.set(3, 640)
     cap2.set(4, 480)
+    
+    # ตั้งค่า buffer size ให้เล็กลงเพื่อลดความล่าช้าของภาพ
+    cap2.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     try:
         while True:
@@ -173,8 +186,8 @@ def main():
                     set_angle(pwm1, 51)
                     set_angle(pwm2, 180)
 
-                    print("รออีก 5 วินาทีแล้วถ่ายภาพ...")
-                    sleep(5)
+                    print("รออีก 3 วินาทีให้ servo เคลื่อนที่เสร็จแล้วถ่ายภาพ...")
+                    sleep(3)
                     
                     # ถ่ายภาพและ predict
                     print("กำลังถ่ายภาพและวิเคราะห์ขยะ...")
